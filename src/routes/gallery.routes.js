@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import cloudinary from "../config/cloudinary.js";
 import Image from "../models/Image.js";
 import AllowedUser from "../models/AllowedUser.js";
+import Favorite from "../models/Favorite.js";
 
 const router = express.Router();
 
@@ -34,7 +35,34 @@ const parseTags = (tags) => {
 };
 
 /**
- * Authorize email for upload/delete/update
+ * Authenticate user (lightweight - just validates email is present)
+ * For favorites, any authenticated Google user can favorite images
+ */
+const authenticateUser = async (req, res, next) => {
+  try {
+    const rawEmail = req.headers["x-user-email"];
+    const email = normalizeEmail(rawEmail);
+
+    if (!email) {
+      return res.status(401).json({
+        success: false,
+        error: "Authentication required",
+      });
+    }
+
+    req.userEmail = email;
+    next();
+  } catch (err) {
+    console.error("authenticateUser error:", err);
+    res.status(500).json({
+      success: false,
+      error: "Authentication check failed",
+    });
+  }
+};
+
+/**
+ * Authorize email for upload/delete/update (admin/editor only)
  */
 const authorizeEmail = async (req, res, next) => {
   try {
@@ -145,6 +173,33 @@ router.get("/types/list", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Could not fetch types",
+    });
+  }
+});
+
+/**
+ * GET user's favorites
+ * Must come before /:id
+ */
+router.get("/favorites", authenticateUser, async (req, res) => {
+  try {
+    const { userEmail } = req;
+
+    const favorites = await Favorite.find({ userId: userEmail })
+      .select("imageId createdAt")
+      .lean();
+
+    const imageIds = favorites.map((fav) => fav.imageId);
+
+    res.status(200).json({
+      success: true,
+      data: imageIds,
+    });
+  } catch (err) {
+    console.error("Fetch favorites error:", err);
+    res.status(500).json({
+      success: false,
+      error: "Could not fetch favorites",
     });
   }
 });
@@ -467,24 +522,13 @@ router.patch("/:id/pin", authorizeEmail, async (req, res) => {
   }
 });
 
-
-
 /**
- * PATCH image type
+ * POST add image to favorites
  */
-router.patch("/:id/type", authorizeEmail, async (req, res) => {
+router.post("/:id/favorite", authenticateUser, async (req, res) => {
   try {
     const { id } = req.params;
-    const { type } = req.body;
-
-    const allowedTypes = [
-      "makeup",
-      "hairstyle",
-      "nails",
-      "facial",
-      "bridal",
-      "other",
-    ];
+    const { userEmail } = req;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -493,47 +537,53 @@ router.patch("/:id/type", authorizeEmail, async (req, res) => {
       });
     }
 
-    if (!type || !allowedTypes.includes(type)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid image type",
-      });
-    }
+    const image = await Image.findById(id);
 
-    const updatedImage = await Image.findByIdAndUpdate(
-      id,
-      { type },
-      { new: true }
-    );
-
-    if (!updatedImage) {
+    if (!image) {
       return res.status(404).json({
         success: false,
         error: "Image not found",
       });
     }
 
-    res.status(200).json({
-      success: true,
-      message: "Image type updated successfully",
-      data: updatedImage,
-    });
+    try {
+      const favorite = await Favorite.create({
+        userId: userEmail,
+        imageId: id,
+      });
+
+      res.status(201).json({
+        success: true,
+        message: "Image added to favourites",
+        data: {
+          imageId: id,
+        },
+      });
+    } catch (mongoError) {
+      if (mongoError.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          error: "Image already in favourites",
+        });
+      }
+      throw mongoError;
+    }
   } catch (err) {
-    console.error("Update image type error:", err);
+    console.error("Add favorite error:", err);
     res.status(500).json({
       success: false,
-      error: "Failed to update image type",
+      error: "Failed to add favourite",
     });
   }
 });
 
 /**
- * PATCH pin / unpin image
+ * DELETE remove image from favorites
  */
-router.patch("/:id/pin", authorizeEmail, async (req, res) => {
+router.delete("/:id/favorite", authenticateUser, async (req, res) => {
   try {
     const { id } = req.params;
-    const { isPinned } = req.body;
+    const { userEmail } = req;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -542,40 +592,30 @@ router.patch("/:id/pin", authorizeEmail, async (req, res) => {
       });
     }
 
-    if (typeof isPinned !== "boolean") {
-      return res.status(400).json({
-        success: false,
-        error: "isPinned must be a boolean",
-      });
-    }
-
-    const updateData = isPinned
-      ? { isPinned: true, pinnedAt: new Date() }
-      : { isPinned: false, pinnedAt: null };
-
-    const updatedImage = await Image.findByIdAndUpdate(id, updateData, {
-      new: true,
+    const result = await Favorite.findOneAndDelete({
+      userId: userEmail,
+      imageId: id,
     });
 
-    if (!updatedImage) {
+    if (!result) {
       return res.status(404).json({
         success: false,
-        error: "Image not found",
+        error: "Favourite not found",
       });
     }
 
     res.status(200).json({
       success: true,
-      message: isPinned
-        ? "Image pinned successfully"
-        : "Image unpinned successfully",
-      data: updatedImage,
+      message: "Image removed from favourites",
+      data: {
+        imageId: id,
+      },
     });
   } catch (err) {
-    console.error("Pin image error:", err);
+    console.error("Remove favorite error:", err);
     res.status(500).json({
       success: false,
-      error: "Failed to update pin status",
+      error: "Failed to remove favourite",
     });
   }
 });
