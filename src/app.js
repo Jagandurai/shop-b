@@ -4,6 +4,7 @@ import compression from "compression";
 import dotenv from "dotenv";
 import galleryRoutes from "./routes/gallery.routes.js";
 import emailRoutes from "./routes/email.router.js";
+import authRoutes from "./routes/auth.routes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 dotenv.config();
@@ -44,6 +45,9 @@ app.get("/healthz", (req, res) => {
 
 // ✅ Gallery API routes
 app.use("/api/gallery", galleryRoutes);
+
+// ✅ Auth API routes
+app.use("/api/auth", authRoutes);
 
 // ✅ Email API routes
 app.use("/api/email", emailRoutes);
